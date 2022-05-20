@@ -4,31 +4,31 @@ import {Plugin} from 'vite';
 import MagicString from 'magic-string';
 import {Plugin as EsbuildPlugin} from 'esbuild';
 
-export enum Languages {
-    bg = 'bg',
-    cs = 'cs',
-    de = 'de',
-    en_gb = 'en-gb',
-    es = 'es',
-    fr = 'fr',
-    hu = 'hu',
-    id = 'id',
-    it = 'it',
-    ja = 'ja',
-    ko = 'ko',
-    nl = 'nl',
-    pl = 'pl',
-    ps = 'ps',
-    pt_br = 'pt-br',
-    ru = 'ru',
-    tr = 'tr',
-    uk = 'uk',
-    zh_hans = 'zh-hans',
-    zh_hant = 'zh-hant',
+export enum Locale {
+    BG = 'bg',
+    CS = 'cs',
+    DE = 'de',
+    EN_GB = 'en-gb',
+    ES = 'es',
+    FR = 'fr',
+    HU = 'hu',
+    ID = 'id',
+    IT = 'it',
+    JA = 'ja',
+    KO = 'ko',
+    NL = 'nl',
+    PL = 'pl',
+    PS = 'ps',
+    PT_BR = 'pt-br',
+    RU = 'ru',
+    TR = 'tr',
+    UK = 'uk',
+    ZH_HANS = 'zh-hans',
+    ZH_HANT = 'zh-hant',
 }
 
 export interface Options {
-    locale: Languages;
+    locale: Locale;
 }
 
 /**
@@ -38,14 +38,14 @@ export interface Options {
  * @returns
  */
 export function esbuildPluginMonacoEditorNls(
-    options: Options = {locale: Languages.en_gb},
+    options: Options
 ): EsbuildPlugin {
     const CURRENT_LOCALE_DATA = getLocalizeMapping(options.locale);
 
     return {
         name: 'esbuild-plugin-monaco-editor-nls',
         setup(build) {
-            build.onLoad({filter: /esm\/vs\/nls\.js/}, async () => {
+            build.onLoad({filter: /esm[\\\/]vs[\\\/]nls\.js$/}, async () => {
                 return {
                     contents: getLocalizeCode(CURRENT_LOCALE_DATA),
                     loader: 'js',
@@ -53,7 +53,7 @@ export function esbuildPluginMonacoEditorNls(
             });
 
             build.onLoad(
-                {filter: /monaco-editor[\\\/]esm[\\\/]vs.+\.js/},
+                {filter: /monaco-editor[\\\/]esm[\\\/]vs.+\.js$/},
                 async (args) => {
                     return {
                         contents: transformLocalizeFuncCode(
@@ -68,13 +68,17 @@ export function esbuildPluginMonacoEditorNls(
     };
 }
 
+function patchPath(path: string): string {
+    return path.replace(/\\/g, '/').replace('/browser/', '/')
+}
+
 /**
  * 使用了monaco-editor-nls的语言映射包，把原始localize(data, message)的方法，替换成了localize(path, data, defaultMessage)
  * vite build 模式下，使用rollup处理
  * @param options 替换语言包
  * @returns
  */
-export default function (options: Options = {locale: Languages.en_gb}): Plugin {
+export default function (options: Options): Plugin {
     const CURRENT_LOCALE_DATA = getLocalizeMapping(options.locale);
 
     return {
@@ -83,21 +87,22 @@ export default function (options: Options = {locale: Languages.en_gb}): Plugin {
         enforce: 'pre',
 
         load(filepath) {
-            if (/esm\/vs\/nls\.js/.test(filepath)) {
+            if (filepath.endsWith('esm/vs/nls.js') ||
+                filepath.endsWith('esm\\vs\\nls.js')) {
                 const code = getLocalizeCode(CURRENT_LOCALE_DATA);
                 return code;
             }
         },
         transform(code, filepath) {
+            let m: RegExpExecArray | null
             if (
-                /monaco-editor[\\\/]esm[\\\/]vs.+\.js/.test(filepath) &&
-                !/esm\/vs\/.*nls\.js/.test(filepath)
+                !filepath.endsWith('esm/vs/nls.js') &&
+                !filepath.endsWith('esm\\vs\\nls.js') &&
+                (m = /monaco-editor[\\\/]esm[\\\/](vs.+)\.js$/.exec(filepath))
             ) {
-                CURRENT_LOCALE_DATA;
-                const re = /(?:monaco-editor\/esm\/)(.+)(?=\.js)/;
-                if (re.exec(filepath) && code.includes('localize(')) {
-                    const path = RegExp.$1;
-                    if (JSON.parse(CURRENT_LOCALE_DATA)[path]) {
+                if (code.includes('localize(')) {
+                    const path = patchPath(m[1])
+                    if ((CURRENT_LOCALE_DATA as { [path: string]: object })[path]) {
                         code = code.replace(
                             /localize\(/g,
                             `localize('${path}', `,
@@ -126,15 +131,14 @@ export default function (options: Options = {locale: Languages.en_gb}): Plugin {
  */
 function transformLocalizeFuncCode(
     filepath: string,
-    CURRENT_LOCALE_DATA: string,
+    CURRENT_LOCALE_DATA: object,
 ) {
-    let code = fs.readFileSync(filepath, 'utf8');
-    const re = /(?:monaco-editor\/esm\/)(.+)(?=\.js)/;
-    if (re.exec(filepath)) {
-        const path = RegExp.$1;
-        if (JSON.parse(CURRENT_LOCALE_DATA)[path]) {
-            code = code.replace(/localize\(/g, `localize('${path}', `);
-        }
+    let code = fs.readFileSync(filepath, 'utf-8');
+    const re = /monaco-editor[\\\/]esm[\\\/](.+)\.js$/;
+    const m = re.exec(filepath)!
+    const path = patchPath(m[1])
+    if ((CURRENT_LOCALE_DATA as { [path: string]: object })[path]) {
+        code = code.replace(/\blocalize\(/g, `localize('${path}', `);
     }
     return code;
 }
@@ -144,9 +148,9 @@ function transformLocalizeFuncCode(
  * @param locale 语言
  * @returns
  */
-function getLocalizeMapping(locale: Languages) {
-    const locale_data_path = path.join(__dirname, `./locale/${locale}.json`);
-    return fs.readFileSync(locale_data_path) as unknown as string;
+function getLocalizeMapping(locale: Locale): object {
+    const localeDataPath = path.join(__dirname, `./locale/${locale}.json`)
+    return JSON.parse(fs.readFileSync(localeDataPath, 'utf-8'))
 }
 
 /**
@@ -154,14 +158,14 @@ function getLocalizeMapping(locale: Languages) {
  * @param CURRENT_LOCALE_DATA 语言包
  * @returns
  */
-function getLocalizeCode(CURRENT_LOCALE_DATA: string) {
+function getLocalizeCode(CURRENT_LOCALE_DATA: object) {
     return `
         function _format(message, args) {
             var result;
             if (args.length === 0) {
                 result = message;
             } else {
-                result = String(message).replace(/\{(\d+)\}/g, function (match, rest) {
+                result = String(message).replace(/\{(\\d+)\}/g, function (match, ...rest) {
                     var index = rest[0];
                     return typeof args[index] !== 'undefined' ? args[index] : match;
                 });
@@ -169,17 +173,10 @@ function getLocalizeCode(CURRENT_LOCALE_DATA: string) {
             return result;
         }
 
-        export function localize(path, data, defaultMessage) {
-            var key = typeof data === 'object' ? data.key : data;
-            var data = ${CURRENT_LOCALE_DATA} || {};
-            var message = (data[path] || {})[key];
-            if (!message) {
-                message = defaultMessage;
-            }
-            var args = [];
-            for (var _i = 3; _i < arguments.length; _i++) {
-                args[_i - 3] = arguments[_i];
-            }
+        export function localize(path, data, message, ...args) {
+            const key = typeof data === 'object' ? data.key : data;
+            data = ${JSON.stringify(CURRENT_LOCALE_DATA)} || {};
+            message = (data[path] || {})[key] || message;
             return _format(message, args);
         }
     `;
